@@ -30,7 +30,7 @@ def unwrap_actual_json(input_str, expected_type=None, max_iterations=10):
     # if iteration count is exceeded
     return False, None
 
-def fix_netbox_json_field(recordset, custom_field_name, max_iterations=10, make_changes=False, expected_types = (list, dict,type(None))):
+def fix_netbox_json_field(recordset, custom_field_name, max_iterations=10, make_changes=False, expected_types=(list, dict,type(None)), replace_empty_string_with_null=False):
     '''Assess the specified field, fix any non-JSON values in NetBox.  This is a work-around for https://github.com/netbox-community/netbox/issues/16640
     Args:
         custom_field_name(str): The custom_field attribute to assess
@@ -49,15 +49,21 @@ def fix_netbox_json_field(recordset, custom_field_name, max_iterations=10, make_
         json_value = nbobj.custom_fields.get(custom_field_name)
         if json_value is None or isinstance(json_value,expected_types):
           continue
-        logging.debug("Found unexpected type in NetBox object  %s %s", nbobj, custom_field_name)
+        logging.debug("Found unexpected type in NetBox object  %s %s; type is %s", nbobj, custom_field_name, type(json_value))
+        logging.debug("Bad value is: %s", json_value)
         nbobj_with_bad_value.append(nbobj)
     logging.info("Evaluated %s objects, %s appear(s) to need repair", count_evaluated, len(nbobj_with_bad_value))
     for nbobj in nbobj_with_bad_value:
+        # first test for an edge case of empty string, which will not decode:
+        if nbobj.custom_fields.get(custom_field_name) == "" and replace_empty_string_with_null:
+            status = True
+            fixed_value = None
         # try getting the JSON value
-        status, fixed_value = unwrap_actual_json(nbobj.custom_fields.get(custom_field_name), max_iterations=max_iterations)
+        else:
+            status, fixed_value = unwrap_actual_json(nbobj.custom_fields.get(custom_field_name), max_iterations=max_iterations)
         if not status:
             nbobj_not_updated.append(nbobj)
-            logging.warning("Unable to unwrap json from `%s` value of NetBox object %s, value: %s", custom_field_name, nbobj, nbobj.custom_fields.get(custom_field_name))
+            logging.warning("Unable to unwrap json from `%s` value of NetBox object %s, value: '%s'", custom_field_name, nbobj, nbobj.custom_fields.get(custom_field_name))
             continue
         if make_changes:
             try:
@@ -75,11 +81,6 @@ def fix_netbox_json_field(recordset, custom_field_name, max_iterations=10, make_
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
         prog="netbox_fix_json", description="Fix JSON custom property types in NetBox, ensure they are not strings"
-    )
-    parser.add_argument(
-        "--fieldname",
-        help="custom field name requiring checks",
-        required=True
     )
     parser.add_argument(
         "--apitoken",
@@ -124,12 +125,20 @@ if __name__ == '__main__':
     parser.add_argument(
         "--max-iterations",
         help="Number of nested JSON string encodings to try and unwrap, default 10",
-        type=int
+        type=int,
+        default=10
     )
     parser.add_argument(
         "--cafile",
         help="CA cert list to use for SSL verification",
     )
+    parser.add_argument(
+        "--replace-empty-string-with-null",
+        help="Replace empty string (bad value) with null.  This is a reasonable action but is not default behavior out of an abundance of caution.",
+        action="store_true"
+    )
+
+
     logging.basicConfig(level=logging.INFO)
     args = parser.parse_args()
     if args.debug:
@@ -146,7 +155,7 @@ if __name__ == '__main__':
     else:
         logging.info("Operating in dry-run mode (updates listed at end of run will be simulated, not actual)")
     recordset = netbox_type.all()
-    objects_updated, objects_not_updated = fix_netbox_json_field(recordset, max_iterations=args.max_iterations, custom_field_name=args.field_name ,make_changes=args.make_changes)
+    objects_updated, objects_not_updated = fix_netbox_json_field(recordset, max_iterations=args.max_iterations, custom_field_name=args.field_name ,make_changes=args.make_changes, replace_empty_string_with_null=args.replace_empty_string_with_null)
     if args.verbose:
         updated_flattened = '\n  '.join([str(item) for item in objects_updated])
         not_updated_flattened = '\n  '.join([str(item) for ite in objects_not_updated])
